@@ -1,130 +1,224 @@
-import os, re, uuid, sqlite3, json, base64
-from datetime import datetime, timezone
+import base64
+import json
+import os
+import re
+import secrets
+import sqlite3
+import urllib.error
+import urllib.request
+from datetime import date, datetime, timezone
 from pathlib import Path
-import requests
-from flask import Flask, request, jsonify, send_from_directory
-from korean_lunar_calendar import KoreanLunarCalendar
+from flask import Flask, jsonify, request, send_from_directory
 
 ROOT = Path(__file__).resolve().parent
-app = Flask(__name__, static_folder=None)
-STEMS = '갑을병정무기경신임계'
-BRANCHES = '자축인묘진사오미신유술해'
-ELEMENTS = ['목','목','화','화','토','토','금','금','수','수']
-BRANCH_ELEMENTS = ['수','토','목','목','토','화','화','토','금','금','토','수']
-TOPICS = {'love':'나의 연애운','reunion':'그 사람과의 재회운','compatibility':'두 사람의 궁합'}
-DB = os.getenv('DB_PATH', '/tmp/gumiho_orders.sqlite3')
+app = Flask(__name__, static_folder='static', static_url_path='')
+app.json.ensure_ascii = False
+DB_PATH = os.environ.get('DB_PATH', str(ROOT / 'orders.sqlite3'))
+PRICE = int(os.environ.get('PREMIUM_PRICE', '4900'))
+TOSS_CLIENT_KEY = os.environ.get('TOSS_CLIENT_KEY', '')
+TOSS_SECRET_KEY = os.environ.get('TOSS_SECRET_KEY', '')
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
+OPENAI_MODEL = os.environ.get('OPENAI_MODEL', 'gpt-4.1-mini')
+ALLOWED_ORIGINS = {x.strip().rstrip('/') for x in os.environ.get('ALLOWED_ORIGINS', '').split(',') if x.strip()}
+PAYMENT_ENABLED = bool(TOSS_CLIENT_KEY and TOSS_SECRET_KEY and OPENAI_API_KEY)
+TOPICS = {'love': '나의 연애운', 'reunion': '그 사람과의 재회운', 'compatibility': '두 사람의 궁합'}
+ANIMALS = ['원숭이', '닭', '개', '돼지', '쥐', '소', '호랑이', '토끼', '용', '뱀', '말', '양']
+STEMS = ['갑', '을', '병', '정', '무', '기', '경', '신', '임', '계']
+BRANCHES = ['자', '축', '인', '묘', '진', '사', '오', '미', '신', '유', '술', '해']
+ELEMENTS = ['목', '목', '화', '화', '토', '토', '금', '금', '수', '수']
+
 
 def db():
-    conn = sqlite3.connect(DB)
-    conn.execute('CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, amount INTEGER NOT NULL, status TEXT NOT NULL, payload TEXT NOT NULL, result TEXT)')
-    conn.commit()
-    return conn
+    con = sqlite3.connect(DB_PATH, timeout=15)
+    con.row_factory = sqlite3.Row
+    con.execute('CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, amount INTEGER NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, payment_key TEXT, result TEXT, created_at TEXT NOT NULL)')
+    con.commit()
+    return con
 
-def pillars(birth, hour=None):
-    day = datetime.strptime(birth, '%Y-%m-%d')
-    if not 1900 <= day.year <= 2050: raise ValueError('1900~2050년 생년월일만 지원합니다.')
-    cal = KoreanLunarCalendar()
-    if not cal.setSolarDate(day.year, day.month, day.day): raise ValueError('날짜를 확인해주세요.')
-    parts = cal.getChineseGapJa().split()
-    if len(parts) < 3: raise ValueError('만세력 변환에 실패했습니다.')
-    pairs = [re.sub(r'[^갑을병정무기경신임계자축인묘진사오미신유술해]', '', p)[:2] for p in parts[:3]]
-    if any(len(p)!=2 for p in pairs): raise ValueError('간지 변환에 실패했습니다.')
-    if hour not in (None, ''):
-        h = int(hour)
-        if h < 0 or h > 23: raise ValueError('출생 시간을 확인해주세요.')
-        branch = ((h+1)//2)%12
-        stem = ((STEMS.index(pairs[2][0])%5)*2 + branch)%10
-        pairs.append(STEMS[stem]+BRANCHES[branch])
-    counts = {k:0 for k in ['목','화','토','금','수']}
-    for p in pairs:
-        counts[ELEMENTS[STEMS.index(p[0])]] += 1
-        counts[BRANCH_ELEMENTS[BRANCHES.index(p[1])]] += 1
-    return {'pillars':dict(zip(['year','month','day','hour'], pairs + ([None] if len(pairs)==3 else []))), 'day_master':pairs[2][0], 'elements':counts, 'time_known':len(pairs)==4}
+
+def error(message, status=400):
+    return jsonify(error=message), status
+
 
 def parse_payload(data):
-    birth = str(data.get('birth',''))
-    if not re.fullmatch(r'\d{4}-\d{2}-\d{2}',birth): raise ValueError('생년월일을 YYYY-MM-DD 형식으로 입력해주세요.')
-    topic = data.get('topic','love')
-    if topic not in TOPICS: raise ValueError('분석 종류가 올바르지 않습니다.')
-    hour = data.get('hour')
-    if hour not in (None,''): hour = int(hour)
-    other = data.get('other_birth','')
-    if topic=='compatibility' and not re.fullmatch(r'\d{4}-\d{2}-\d{2}',str(other)):
-        raise ValueError('상대방 생년월일을 입력해주세요.')
-    return {'birth':birth,'hour':hour,'topic':topic,'other_birth':other}
+    if not isinstance(data, dict):
+        raise ValueError('입력 형식이 올바르지 않습니다.')
+    topic = data.get('topic')
+    if topic not in TOPICS:
+        raise ValueError('분석 종류를 선택해 주세요.')
+    try:
+        birth = date.fromisoformat(str(data.get('birth', '')))
+    except ValueError:
+        raise ValueError('생년월일을 정확하게 입력해 주세요.')
+    if birth > date.today() or birth.year < 1900:
+        raise ValueError('생년월일 범위를 확인해 주세요.')
+    hour = data.get('hour', '')
+    if hour is None:
+        hour = ''
+    if str(hour) and (not re.fullmatch(r'\d{1,2}', str(hour)) or not 0 <= int(hour) <= 23):
+        raise ValueError('출생 시간을 확인해 주세요.')
+    other = None
+    if topic == 'compatibility':
+        try:
+            other = date.fromisoformat(str(data.get('other_birth', '')))
+        except ValueError:
+            raise ValueError('상대방 생년월일을 입력해 주세요.')
+        if other > date.today() or other.year < 1900:
+            raise ValueError('상대방 생년월일 범위를 확인해 주세요.')
+    return {'topic': topic, 'birth': birth.isoformat(), 'hour': str(hour), 'other_birth': other.isoformat() if other else ''}
 
-def preview(data):
-    payload = parse_payload(data)
-    base = pillars(payload['birth'], payload['hour'])
-    element = ELEMENTS[STEMS.index(base['day_master'])]
-    messages = {'목':'관계에서 함께 성장하고 대화하는 경험을 중요하게 여기는 상징입니다.', '화':'감정 표현과 설렘의 에너지를 중시하는 상징입니다.', '토':'안정감과 신뢰를 쌓아가는 관계를 중시하는 상징입니다.', '금':'분명한 기준과 서로의 약속을 중시하는 상징입니다.', '수':'섬세한 교감과 깊은 이해를 중시하는 상징입니다.'}
-    result = {'title':TOPICS[payload['topic']], 'birth':payload['birth'], 'saju':base, 'preview':f"일간은 {base['day_master']}({element})입니다. 전통 명리학의 상징적 해석에서 {messages[element]}", 'notice':'전통 명리학을 활용한 오락·자기성찰 콘텐츠이며 실제 미래를 예측하거나 관계의 결과를 보장하지 않습니다. 월주는 라이브러리 기준으로 계산되며 절기 경계·출생지·자시 기준은 전문 만세력과 대조가 필요합니다.'}
-    if payload['topic']=='compatibility': result['other'] = pillars(payload['other_birth'])
-    return result
+
+def year_sign(yr):
+    return STEMS[(yr - 4) % 10] + BRANCHES[(yr - 4) % 12]
+
+
+def preview_for(data):
+    yr = int(data['birth'][:4]); stem_index = (yr - 4) % 10
+    animal = ANIMALS[yr % 12]
+    element = ELEMENTS[stem_index]
+    other = data['other_birth']
+    extra = f" 상대방의 출생 연도는 {year_sign(int(other[:4]))}년으로 표시됩니다." if other else ''
+    messages = {
+        'love': '마음을 표현하는 속도와 상대방의 반응을 함께 살펴보세요. 원하는 관계의 모습을 구체적으로 적어 보면 선택에 도움이 됩니다.',
+        'reunion': '재회의 가능성을 단정하기보다, 헤어진 이유와 현재 서로의 의사를 먼저 살펴보세요. 연락의 경계와 타이밍을 존중하는 것이 중요합니다.',
+        'compatibility': '두 사람의 궁합을 운명으로 확정하기보다 대화 방식, 갈등 해결, 기대치를 비교해 보세요.'
+    }
+    return {
+        'title': TOPICS[data['topic']],
+        'saju': {'pillars': {'year': year_sign(yr), 'month': '미산출', 'day': '미산출', 'hour': ''}, 'day_master': '미산출', 'elements': {element: '연간 기준 참고'}},
+        'preview': f"{yr}년생의 연간(年干)은 {STEMS[stem_index]}, 띠는 {animal}로 간략 표시됩니다.{extra}\n\n{messages[data['topic']]}",
+        'notice': '이 결과는 양력 출생연도만 사용한 간이 상징 해석입니다. 입춘·절기·음력 변환을 적용한 정확한 사주팔자/일간/오행 분포가 아니며, 오락 및 자기성찰용입니다.'
+    }
+
+
+def external_json(url, payload, headers):
+    req = urllib.request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode(), headers={'Content-Type': 'application/json', **headers}, method='POST')
+    try:
+        with urllib.request.urlopen(req, timeout=35) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        app.logger.error('외부 서비스 오류 %s: %s', exc.code, exc.read(400).decode(errors='replace'))
+        raise RuntimeError('외부 서비스 요청에 실패했습니다. 잠시 후 다시 시도해 주세요.')
+    except Exception as exc:
+        app.logger.error('외부 서비스 연결 오류: %s', exc)
+        raise RuntimeError('외부 서비스 연결에 실패했습니다.')
+
+
+def generate_premium(payload):
+    prompt = ('한국어로 구미호 연애운 프리미엄 자기성찰 리포트를 작성하세요. 900~1300자, 제목과 5개 소제목. '
+              '관계에서 점검할 질문과 실천 조언을 구체적으로 쓰되, 미래를 단정하거나 상대의 감정을 읽는 척하지 마세요. '
+              '실제 사주팔자 계산이 없으므로 일주, 월주, 용신, 대운, 궁합 점수를 만들어내지 마세요. '
+              '오락적 상징 해석임을 끝에 분명히 밝히세요. 개인정보를 되풀이하지 마세요.\n입력: ' + json.dumps(payload, ensure_ascii=False))
+    result = external_json('https://api.openai.com/v1/chat/completions', {'model': OPENAI_MODEL, 'messages': [{'role': 'user', 'content': prompt}], 'temperature': 0.7}, {'Authorization': 'Bearer ' + OPENAI_API_KEY})
+    return result['choices'][0]['message']['content'].strip()
+
+
+@app.after_request
+def cors(resp):
+    origin = request.headers.get('Origin', '').rstrip('/')
+    if origin in ALLOWED_ORIGINS:
+        resp.headers['Access-Control-Allow-Origin'] = origin
+        resp.headers['Vary'] = 'Origin'
+        resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    resp.headers['X-Content-Type-Options'] = 'nosniff'
+    return resp
+
+
+@app.route('/api/<path:path>', methods=['OPTIONS'])
+def options(path):
+    return '', 204
+
 
 @app.get('/')
-def home(): return send_from_directory(ROOT,'index.html')
+def home():
+    return send_from_directory('static', 'index.html')
 
-@app.get('/health')
-def health(): return jsonify(status='running',service='구미호 연애운 사주')
 
-@app.post('/api/preview')
-def api_preview():
-    try: return jsonify(preview(request.get_json(silent=True) or {}))
-    except (ValueError,TypeError,IndexError) as e: return jsonify(error=str(e)),400
+@app.get('/api/health')
+def health():
+    return jsonify(ok=True)
+
 
 @app.get('/api/config')
 def config():
-    return jsonify(payment_enabled=bool(os.getenv('TOSS_CLIENT_KEY') and os.getenv('TOSS_SECRET_KEY') and os.getenv('OPENAI_API_KEY')), client_key=os.getenv('TOSS_CLIENT_KEY',''), price=int(os.getenv('PREMIUM_PRICE','4900')))
+    return jsonify(payment_enabled=PAYMENT_ENABLED, price=PRICE, client_key=TOSS_CLIENT_KEY if PAYMENT_ENABLED else '')
+
+
+@app.post('/api/preview')
+def preview():
+    try:
+        return jsonify(preview_for(parse_payload(request.get_json(silent=True))))
+    except ValueError as exc:
+        return error(str(exc))
+
 
 @app.post('/api/orders')
 def create_order():
-    if not all(os.getenv(k) for k in ('TOSS_CLIENT_KEY','TOSS_SECRET_KEY','OPENAI_API_KEY')): return jsonify(error='유료 기능 준비 중입니다.'),503
+    if not PAYMENT_ENABLED:
+        return error('결제 기능이 아직 설정되지 않았습니다.', 503)
     try:
-        payload=parse_payload(request.get_json(silent=True) or {})
-        preview(payload)
-        order_id='gumiho_'+uuid.uuid4().hex
-        amount=int(os.getenv('PREMIUM_PRICE','4900'))
-        with db() as conn: conn.execute('INSERT INTO orders VALUES (?,?,?,?,?)',(order_id,amount,'pending',json.dumps(payload),None))
-        return jsonify(orderId=order_id,amount=amount,orderName='구미호 프리미엄 연애운 분석')
-    except (ValueError,TypeError) as e: return jsonify(error=str(e)),400
+        payload = parse_payload(request.get_json(silent=True))
+    except ValueError as exc:
+        return error(str(exc))
+    order_id = 'gumiho_' + secrets.token_urlsafe(20).replace('-', 'A').replace('_', 'B')
+    with db() as con:
+        con.execute('INSERT INTO orders (id,amount,payload,status,created_at) VALUES (?,?,?,?,?)', (order_id, PRICE, json.dumps(payload), 'created', datetime.now(timezone.utc).isoformat()))
+    return jsonify(orderId=order_id, amount=PRICE, orderName='구미호 AI 프리미엄 연애운')
+
 
 @app.post('/api/payments/confirm')
-def confirm_payment():
-    secret=os.getenv('TOSS_SECRET_KEY')
-    if not secret: return jsonify(error='결제가 설정되지 않았습니다.'),503
-    data=request.get_json(silent=True) or {}
-    oid=data.get('orderId',''); key=data.get('paymentKey',''); amount=data.get('amount')
-    with db() as conn:
-        row=conn.execute('SELECT amount,status FROM orders WHERE id=?',(oid,)).fetchone()
-        if not row or row[1]!='pending' or type(amount)!=int or amount!=row[0]: return jsonify(error='주문 정보를 확인해주세요.'),400
-        token=base64.b64encode((secret+':').encode()).decode()
-        try:
-            r=requests.post('https://api.tosspayments.com/v1/payments/confirm',json={'paymentKey':key,'orderId':oid,'amount':amount},headers={'Authorization':'Basic '+token},timeout=20)
-            body=r.json()
-        except (requests.RequestException,ValueError): return jsonify(error='결제사 연결 오류'),502
-        if r.status_code!=200 or body.get('status')!='DONE': return jsonify(error='결제 승인 실패',detail=body.get('message','')),400
-        conn.execute("UPDATE orders SET status='paid' WHERE id=?",(oid,))
-    return jsonify(ok=True,orderId=oid)
+def confirm():
+    if not PAYMENT_ENABLED:
+        return error('결제 기능이 비활성화되어 있습니다.', 503)
+    data = request.get_json(silent=True) or {}
+    order_id, payment_key, amount = data.get('orderId'), data.get('paymentKey'), data.get('amount')
+    if not isinstance(order_id, str) or not isinstance(payment_key, str) or not isinstance(amount, int) or isinstance(amount, bool):
+        return error('결제 승인 정보가 올바르지 않습니다.')
+    with db() as con:
+        order = con.execute('SELECT * FROM orders WHERE id=?', (order_id,)).fetchone()
+    if not order or order['amount'] != amount:
+        return error('주문 금액 또는 주문번호가 일치하지 않습니다.')
+    if order['status'] == 'paid':
+        return jsonify(ok=True) if order['payment_key'] == payment_key else error('이미 승인된 주문입니다.', 409)
+    if order['status'] != 'created':
+        return error('처리할 수 없는 주문 상태입니다.', 409)
+    auth = base64.b64encode((TOSS_SECRET_KEY + ':').encode()).decode()
+    try:
+        result = external_json('https://api.tosspayments.com/v1/payments/confirm', {'paymentKey': payment_key, 'orderId': order_id, 'amount': amount}, {'Authorization': 'Basic ' + auth})
+    except RuntimeError as exc:
+        return error(str(exc), 502)
+    if result.get('status') != 'DONE' or result.get('orderId') != order_id or result.get('totalAmount') != amount or result.get('paymentKey') != payment_key:
+        return error('결제 승인 결과를 검증하지 못했습니다. 고객센터에 문의해 주세요.', 502)
+    with db() as con:
+        con.execute("UPDATE orders SET status='paid',payment_key=? WHERE id=? AND status='created'", (payment_key, order_id))
+    return jsonify(ok=True)
+
 
 @app.post('/api/premium')
 def premium():
-    data=request.get_json(silent=True) or {}
-    oid=data.get('orderId','')
-    with db() as conn:
-        row=conn.execute('SELECT status,payload,result FROM orders WHERE id=?',(oid,)).fetchone()
-        if not row or row[0]!='paid': return jsonify(error='결제 확인이 필요합니다.'),403
-        if row[2]: return jsonify(result=json.loads(row[2]))
-        payload=json.loads(row[1])
-    if not os.getenv('OPENAI_API_KEY'): return jsonify(error='AI 기능이 설정되지 않았습니다.'),503
-    facts=preview(payload)
-    prompt='다음 만세력 계산 결과를 바탕으로 전통 명리학의 상징적 해석을 한국어로 작성해 주세요. 미래의 사건이나 상대방 감정을 단정하지 말고, 재회·결혼을 보장하지 마세요. 섹션: 타고난 연애 성향, 관계의 강점, 주의할 패턴, 실천 조언. 900~1300자. 데이터: '+json.dumps(facts,ensure_ascii=False)
+    data = request.get_json(silent=True) or {}
+    order_id = data.get('orderId')
+    if not isinstance(order_id, str):
+        return error('주문번호를 입력해 주세요.')
+    with db() as con:
+        order = con.execute('SELECT * FROM orders WHERE id=?', (order_id,)).fetchone()
+    if not order or order['status'] != 'paid':
+        return error('결제 완료된 주문만 분석할 수 있습니다.', 403)
+    if order['result']:
+        return jsonify(result=order['result'])
+    if not OPENAI_API_KEY:
+        return error('AI 설정이 필요합니다. 관리자에게 문의해 주세요.', 503)
     try:
-        r=requests.post('https://api.openai.com/v1/chat/completions',headers={'Authorization':'Bearer '+os.environ['OPENAI_API_KEY']},json={'model':os.getenv('OPENAI_MODEL','gpt-4o-mini'),'messages':[{'role':'system','content':'당신은 전통 명리학을 문화적 상징 체계로 설명하는 한국어 콘텐츠 작가입니다.'},{'role':'user','content':prompt}],'temperature':0.7},timeout=55)
-        r.raise_for_status()
-        answer=r.json()['choices'][0]['message']['content']
-    except (requests.RequestException,KeyError,IndexError,ValueError): return jsonify(error='AI 분석을 잠시 생성할 수 없습니다. 다시 시도해주세요.'),502
-    with db() as conn: conn.execute('UPDATE orders SET result=? WHERE id=? AND status=?',(json.dumps(answer,ensure_ascii=False),oid,'paid'))
-    return jsonify(result=answer)
+        report = generate_premium(json.loads(order['payload']))
+    except (RuntimeError, KeyError, IndexError, ValueError) as exc:
+        app.logger.error('AI 분석 오류: %s', exc)
+        return error('AI 분석 생성이 지연되고 있습니다. 잠시 후 다시 시도해 주세요.', 502)
+    with db() as con:
+        con.execute('UPDATE orders SET result=? WHERE id=? AND result IS NULL', (report, order_id))
+        saved = con.execute('SELECT result FROM orders WHERE id=?', (order_id,)).fetchone()
+    return jsonify(result=saved['result'])
 
-if __name__=='__main__': app.run(host='0.0.0.0',port=int(os.getenv('PORT','10000')))
+
+if __name__ == '__main__':
+    app.run(debug=os.environ.get('FLASK_DEBUG') == '1', port=int(os.environ.get('PORT', 5000)))
