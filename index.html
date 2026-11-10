@@ -1,12 +1,158 @@
+
 <!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>구미호 연애운 사주</title>
+<style>
+*{box-sizing:border-box}
+body{
+ margin:0;
+ background:#fff1f5;
+ color:#532c43;
+ font-family:Georgia,"Noto Serif KR",serif;
+}
+main{max-width:520px;margin:auto;padding:35px 22px 70px}
+header{text-align:center;padding:38px 0}
+.fox{font-size:65px}
+h1{font-size:34px;line-height:1.4;margin:15px 0}
+h2{font-size:23px}
+p{line-height:1.8}
+.card{
+ background:#fffafc;
+ border:1px solid #f4c9d9;
+ border-radius:22px;
+ padding:24px;
+ margin:20px 0;
+ box-shadow:0 8px 25px #c67b9815;
+}
+button{
+ width:100%;
+ padding:17px;
+ margin:8px 0;
+ border:1px solid #e9a7c1;
+ border-radius:15px;
+ background:white;
+ color:#783d59;
+ font-size:17px;
+ font-weight:bold;
+ cursor:pointer;
+}
+button.active,.primary{
+ background:#a94f78;
+ color:white;
+}
+label{display:block;margin:15px 0 7px;font-weight:bold}
+input,select{
+ width:100%;
+ padding:14px;
+ border:1px solid #e6b8cc;
+ border-radius:12px;
+ background:white;
+ font-size:16px;
+}
+.hidden{display:none}
+.note{font-size:13px;color:#8c7080}
+footer{text-align:center;font-size:12px;margin-top:35px}
+</style>
 </head>
-<body style="background:#fff1f5;text-align:center;padding:60px 15px;">
-<h1>🦊 구미호 연애운 사주</h1>
-<p>당신의 사랑에 숨겨진 운명을 확인하세요.</p>
+<body>
+<main>
+<header>
+<div class="fox">🦊</div>
+<h1>구미호 연애운 사주</h1>
+<p>천 년의 기다림 끝에 깨어난 인연의 비밀.<br>
+당신의 사랑에 숨겨진 이야기를 만나보세요.</p>
+</header>
+
+<section class="card">
+<h2>🌸 어떤 인연이 궁금한가요?</h2>
+<button onclick="choose('연애운',this)">💕 나의 연애운</button>
+<button onclick="choose('재회운',this)">🌙 그 사람과의 재회운</button>
+<button onclick="choose('궁합',this)">💍 두 사람의 궁합</button>
+<button onclick="choose('결혼운',this)">🌷 나의 결혼운</button>
+</section>
+
+<section id="form" class="card hidden">
+<h2 id="heading">인연의 문을 열어주세요</h2>
+<form id="sajuForm">
+<label for="name">이름 또는 별명</label>
+<input id="name" required maxlength="30" placeholder="이름을 입력하세요">
+
+<label for="birth">생년월일</label>
+<input id="birth" type="date" required>
+
+<label for="calendar">양력 / 음력</label>
+<select id="calendar">
+<option value="양력">양력</option>
+<option value="음력">음력</option>
+</select>
+
+<label for="time">태어난 시간</label>
+<select id="time">
+<option value="모름">잘 모르겠어요</option>
+<option value="자시">23:00~00:59</option>
+<option value="축시">01:00~02:59</option>
+<option value="인시">03:00~04:59</option>
+<option value="묘시">05:00~06:59</option>
+<option value="진시">07:00~08:59</option>
+<option value="사시">09:00~10:59</option>
+<option value="오시">11:00~12:59</option>
+<option value="미시">13:00~14:59</option>
+<option value="신시">15:00~16:59</option>
+<option value="유시">17:00~18:59</option>
+<option value="술시">19:00~20:59</option>
+<option value="해시">21:00~22:59</option>
+</select>
+
+<div id="partner" class="hidden">
+<h2>💗 상대방의 정보</h2>
+<label for="partnerName">상대방 이름 또는 별명</label>
+<input id="partnerName" maxlength="30" placeholder="상대방 이름">
+
+<label for="partnerBirth">상대방 생년월일</label>
+<input id="partnerBirth" type="date">
+</div>
+
+<button type="submit" class="primary">🦊 나의 인연 확인하기</button>
+</form>
+<p class="note">입력 정보는 이 체험 페이지에서 서버로 전송하거나 저장하지 않습니다.</p>
+</section>
+
+<section id="result" class="card hidden" aria-live="polite">
+<h2>🦊 인연의 문이 열렸어요</h2>
+<p id="resultText"></p>
+<p class="note">현재는 기능 테스트용 화면입니다. 실제 명리학 사주 계산이나 결제 기능은 아직 연결되지 않았습니다.</p>
+</section>
+
+<footer>© 구미호 연애운 사주 · 재미와 자기성찰을 위한 서비스</footer>
+</main>
+
+<script>
+let selected="";
+function choose(type,button){
+ selected=type;
+ document.querySelectorAll("button").forEach(b=>b.classList.remove("active"));
+ button.classList.add("active");
+ document.getElementById("form").classList.remove("hidden");
+ document.getElementById("result").classList.add("hidden");
+ document.getElementById("heading").textContent=type+"의 인연을 살펴볼까요?";
+ const partner=document.getElementById("partner");
+ partner.classList.toggle("hidden",type!=="궁합");
+ document.getElementById("partnerName").required=type==="궁합";
+ document.getElementById("partnerBirth").required=type==="궁합";
+ document.getElementById("form").scrollIntoView({behavior:"smooth"});
+}
+document.getElementById("sajuForm").addEventListener("submit",function(e){
+ e.preventDefault();
+ const name=document.getElementById("name").value.trim();
+ const result=document.getElementById("result");
+ document.getElementById("resultText").textContent=
+ name+"님의 "+selected+" 이야기를 준비하고 있어요. 정식 사주 분석 기능은 다음 단계에서 연결할 예정입니다.";
+ result.classList.remove("hidden");
+ result.scrollIntoView({behavior:"smooth"});
+});
+</script>
 </body>
 </html>
