@@ -6,6 +6,8 @@ import os
 import re
 import secrets
 import sqlite3
+import psycopg
+from psycopg.rows import dict_row
 import urllib.error
 import urllib.request
 from datetime import date, datetime, timezone
@@ -16,6 +18,7 @@ ROOT = Path(__file__).resolve().parent
 app = Flask(__name__, static_folder='static', static_url_path='')
 app.json.ensure_ascii = False
 DB_PATH = os.environ.get('DB_PATH', str(ROOT / 'orders.sqlite3'))
+DATABASE_URL = os.environ.get('DATABASE_URL', '')
 PRICE = int(os.environ.get('PREMIUM_PRICE', '4900'))
 TOSS_CLIENT_KEY = os.environ.get('TOSS_CLIENT_KEY', '')
 TOSS_SECRET_KEY = os.environ.get('TOSS_SECRET_KEY', '')
@@ -27,7 +30,7 @@ PAYAPP_LINK_KEY = os.environ.get('PAYAPP_LINK_KEY', '')
 PAYAPP_LINK_VALUE = os.environ.get('PAYAPP_LINK_VALUE', '')
 PAYAPP_PAYMENT_KEY = os.environ.get('PAYAPP_PAYMENT_KEY', '')
 SITE_URL = os.environ.get('SITE_URL', 'https://gumiho-love-saju.onrender.com').rstrip('/')
-PAYMENT_ENABLED = bool(PAYAPP_USERID and PAYAPP_LINK_KEY and PAYAPP_LINK_VALUE and PAYAPP_PAYMENT_KEY and OPENAI_API_KEY and os.environ.get('DB_PATH'))
+PAYMENT_ENABLED = bool(PAYAPP_USERID and PAYAPP_LINK_KEY and PAYAPP_LINK_VALUE and PAYAPP_PAYMENT_KEY and OPENAI_API_KEY and DATABASE_URL)
 TOPICS = {'love': '나의 연애운', 'reunion': '그 사람과의 재회운', 'compatibility': '두 사람의 궁합'}
 ANIMALS = ['원숭이', '닭', '개', '돼지', '쥐', '소', '호랑이', '토끼', '용', '뱀', '말', '양']
 STEMS = ['갑', '을', '병', '정', '무', '기', '경', '신', '임', '계']
@@ -35,7 +38,28 @@ BRANCHES = ['자', '축', '인', '묘', '진', '사', '오', '미', '신', '유'
 ELEMENTS = ['목', '목', '화', '화', '토', '토', '금', '금', '수', '수']
 
 
+class PostgresConnection:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def execute(self, query, params=()):
+        return self.connection.execute(query.replace('?', '%s'), params)
+
+    def __enter__(self):
+        self.connection.__enter__()
+        return self
+
+    def __exit__(self, *args):
+        return self.connection.__exit__(*args)
+
+
 def db():
+    if DATABASE_URL:
+        con = psycopg.connect(DATABASE_URL, row_factory=dict_row, connect_timeout=10)
+        wrapped = PostgresConnection(con)
+        wrapped.execute('CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, amount INTEGER NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, payment_key TEXT, result TEXT, created_at TEXT NOT NULL)')
+        con.commit()
+        return wrapped
     con = sqlite3.connect(DB_PATH, timeout=15)
     con.row_factory = sqlite3.Row
     con.execute('CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, amount INTEGER NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, payment_key TEXT, result TEXT, created_at TEXT NOT NULL)')
