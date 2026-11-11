@@ -9,7 +9,7 @@ import secrets
 import sqlite3
 import urllib.error
 import urllib.request
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory
 
@@ -141,12 +141,12 @@ def valid_payapp_signature(data):
     if not re.fullmatch(r'\d{14}', stamp):
         return False
     try:
-        event_time = datetime.strptime(stamp, '%Y%m%d%H%M%S').replace(tzinfo=timezone.utc)
+        event_time = datetime.strptime(stamp, '%Y%m%d%H%M%S').replace(tzinfo=timezone(timedelta(hours=9)))
     except ValueError:
         return False
     # PayApp's timestamp window is 15 minutes. Compare with server time; avoid
     # honoring stale or far-future notifications even if a prior token is leaked.
-    if abs((datetime.now(timezone.utc) - event_time).total_seconds()) > 900:
+    if abs((datetime.now(timezone(timedelta(hours=9))) - event_time).total_seconds()) > 900:
         return False
     expected = hashlib.sha256((PAYAPP_USERID + stamp + PAYAPP_REQUESTKEY).encode()).hexdigest()
     return safe_equal(str(data.get('hash', '')).lower(), expected)
