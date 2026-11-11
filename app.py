@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import hmac
 import urllib.parse
@@ -20,12 +21,13 @@ PRICE = int(os.environ.get('PREMIUM_PRICE', '4990'))
 PAYAPP_USERID = os.environ.get('PAYAPP_USERID', '')
 PAYAPP_LINKKEY = os.environ.get('PAYAPP_LINKKEY', '')
 PAYAPP_LINKVAL = os.environ.get('PAYAPP_LINKVAL', '')
+PAYAPP_REQUESTKEY = os.environ.get('PAYAPP_REQUESTKEY', '')
 PAYAPP_PUBLIC_URL = os.environ.get('PAYAPP_PUBLIC_URL', '').rstrip('/')
 SITE_URL = os.environ.get('SITE_URL', PAYAPP_PUBLIC_URL).rstrip('/')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
 OPENAI_MODEL = os.environ.get('OPENAI_MODEL', 'gpt-4.1-mini')
 ALLOWED_ORIGINS = {x.strip().rstrip('/') for x in os.environ.get('ALLOWED_ORIGINS', '').split(',') if x.strip()}
-PAYMENT_ENABLED = bool(PAYAPP_USERID and PAYAPP_LINKKEY and PAYAPP_LINKVAL and PAYAPP_PUBLIC_URL.startswith('https://') and SITE_URL.startswith('https://') and OPENAI_API_KEY)
+PAYMENT_ENABLED = bool(PAYAPP_USERID and PAYAPP_LINKKEY and PAYAPP_LINKVAL and PAYAPP_REQUESTKEY and PAYAPP_PUBLIC_URL.startswith('https://') and SITE_URL.startswith('https://') and OPENAI_API_KEY)
 TOPICS = {'love': '나의 연애운', 'reunion': '그 사람과의 재회운', 'compatibility': '두 사람의 궁합'}
 ANIMALS = ['원숭이', '닭', '개', '돼지', '쥐', '소', '호랑이', '토끼', '용', '뱀', '말', '양']
 STEMS = ['갑', '을', '병', '정', '무', '기', '경', '신', '임', '계']
@@ -132,6 +134,22 @@ def payapp_request(fields):
         app.logger.error('PayApp rejected payment request: %s', result.get('errno', 'unknown'))
         raise RuntimeError('결제 요청에 실패했습니다. 관리자에게 문의해 주세요.')
     return result
+
+
+def valid_payapp_signature(data):
+    stamp = str(data.get('responsedate', ''))
+    if not re.fullmatch(r'\d{14}', stamp):
+        return False
+    try:
+        event_time = datetime.strptime(stamp, '%Y%m%d%H%M%S').replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    # PayApp's timestamp window is 15 minutes. Compare with server time; avoid
+    # honoring stale or far-future notifications even if a prior token is leaked.
+    if abs((datetime.now(timezone.utc) - event_time).total_seconds()) > 900:
+        return False
+    expected = hashlib.sha256((PAYAPP_USERID + stamp + PAYAPP_REQUESTKEY).encode()).hexdigest()
+    return safe_equal(str(data.get('hash', '')).lower(), expected)
 
 
 def safe_equal(a, b):
@@ -241,7 +259,8 @@ def payapp_feedback():
         return 'FAIL', 503
     if not (safe_equal(data.get('userid', ''), PAYAPP_USERID)
             and safe_equal(data.get('linkkey', ''), PAYAPP_LINKKEY)
-            and safe_equal(data.get('linkval', ''), PAYAPP_LINKVAL)):
+            and safe_equal(data.get('linkval', ''), PAYAPP_LINKVAL)
+            and valid_payapp_signature(data)):
         return 'FAIL', 403
     order_id = data.get('var1', '')
     with db() as con:
