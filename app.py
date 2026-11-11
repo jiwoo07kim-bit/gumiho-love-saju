@@ -132,7 +132,14 @@ def options(path):
 
 @app.get('/')
 def home():
-    return send_from_directory('static', 'index.html')
+    return send_from_directory(str(ROOT), 'index.html')
+
+
+@app.get('/<path:filename>')
+def public_art(filename):
+    if filename in {'hero-reference.jpg', 'fox-detail.jpg', 'moon-fox.jpg', 'hero.jpg', 'fox.jpg', 'moon.jpg'}:
+        return send_from_directory(str(ROOT), filename)
+    return error('파일을 찾을 수 없습니다.', 404)
 
 
 @app.get('/api/health')
