@@ -180,7 +180,7 @@ def health():
 
 @app.get('/api/config')
 def config():
-    return jsonify(payment_enabled=PAYMENT_ENABLED, price=PRICE, provider='payapp')
+    return jsonify(payment_enabled=PAYMENT_ENABLED, price=PRICE, provider='payapp', setup={'payapp_userid': bool(PAYAPP_USERID), 'payapp_link_key': bool(PAYAPP_LINK_KEY), 'payapp_link_value': bool(PAYAPP_LINK_VALUE), 'payapp_payment_key': bool(PAYAPP_PAYMENT_KEY), 'openai_api_key': bool(OPENAI_API_KEY), 'database_url': bool(DATABASE_URL)})
 
 
 @app.post('/api/preview')
@@ -194,7 +194,7 @@ def preview():
 @app.post('/api/orders')
 def create_order():
     if not PAYMENT_ENABLED:
-        return error('결제 설정이 아직 완료되지 않았습니다. PAYAPP_USERID, 인증키, OPENAI_API_KEY, 영구 DB_PATH를 확인해 주세요.', 503)
+        return error('결제 설정이 아직 완료되지 않았습니다. PAYAPP_USERID, 인증키, OPENAI_API_KEY, DATABASE_URL을 확인해 주세요.', 503)
     try:
         payload = parse_payload(request.get_json(silent=True))
     except ValueError as exc:
