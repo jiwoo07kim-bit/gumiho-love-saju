@@ -1,5 +1,7 @@
 import base64
 import json
+import hmac
+import urllib.parse
 import os
 import re
 import secrets
@@ -14,13 +16,16 @@ ROOT = Path(__file__).resolve().parent
 app = Flask(__name__, static_folder='static', static_url_path='')
 app.json.ensure_ascii = False
 DB_PATH = os.environ.get('DB_PATH', str(ROOT / 'orders.sqlite3'))
-PRICE = int(os.environ.get('PREMIUM_PRICE', '4900'))
-TOSS_CLIENT_KEY = os.environ.get('TOSS_CLIENT_KEY', '')
-TOSS_SECRET_KEY = os.environ.get('TOSS_SECRET_KEY', '')
+PRICE = int(os.environ.get('PREMIUM_PRICE', '4990'))
+PAYAPP_USERID = os.environ.get('PAYAPP_USERID', '')
+PAYAPP_LINKKEY = os.environ.get('PAYAPP_LINKKEY', '')
+PAYAPP_LINKVAL = os.environ.get('PAYAPP_LINKVAL', '')
+PAYAPP_PUBLIC_URL = os.environ.get('PAYAPP_PUBLIC_URL', '').rstrip('/')
+SITE_URL = os.environ.get('SITE_URL', PAYAPP_PUBLIC_URL).rstrip('/')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
 OPENAI_MODEL = os.environ.get('OPENAI_MODEL', 'gpt-4.1-mini')
 ALLOWED_ORIGINS = {x.strip().rstrip('/') for x in os.environ.get('ALLOWED_ORIGINS', '').split(',') if x.strip()}
-PAYMENT_ENABLED = bool(TOSS_CLIENT_KEY and TOSS_SECRET_KEY and OPENAI_API_KEY)
+PAYMENT_ENABLED = bool(PAYAPP_USERID and PAYAPP_LINKKEY and PAYAPP_LINKVAL and PAYAPP_PUBLIC_URL.startswith('https://') and SITE_URL.startswith('https://') and OPENAI_API_KEY)
 TOPICS = {'love': '나의 연애운', 'reunion': '그 사람과의 재회운', 'compatibility': '두 사람의 궁합'}
 ANIMALS = ['원숭이', '닭', '개', '돼지', '쥐', '소', '호랑이', '토끼', '용', '뱀', '말', '양']
 STEMS = ['갑', '을', '병', '정', '무', '기', '경', '신', '임', '계']
@@ -32,6 +37,11 @@ def db():
     con = sqlite3.connect(DB_PATH, timeout=15)
     con.row_factory = sqlite3.Row
     con.execute('CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, amount INTEGER NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, payment_key TEXT, result TEXT, created_at TEXT NOT NULL)')
+    columns = {r[1] for r in con.execute('PRAGMA table_info(orders)').fetchall()}
+    if 'mul_no' not in columns:
+        con.execute('ALTER TABLE orders ADD COLUMN mul_no TEXT')
+    if 'access_token' not in columns:
+        con.execute('ALTER TABLE orders ADD COLUMN access_token TEXT')
     con.commit()
     return con
 
@@ -104,6 +114,41 @@ def external_json(url, payload, headers):
         raise RuntimeError('외부 서비스 연결에 실패했습니다.')
 
 
+def payapp_request(fields):
+    encoded = urllib.parse.urlencode(fields).encode('utf-8')
+    req = urllib.request.Request(
+        'https://api.payapp.kr/oapi/apiLoad.html',
+        data=encoded,
+        headers={'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8'},
+        method='POST'
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=25) as response:
+            result = dict(urllib.parse.parse_qsl(response.read().decode('utf-8')))
+    except (urllib.error.URLError, UnicodeError) as exc:
+        app.logger.error('PayApp request error: %s', exc)
+        raise RuntimeError('결제 서비스에 연결하지 못했습니다.')
+    if result.get('state') != '1' or not result.get('mul_no') or not result.get('payurl', '').startswith('https://'):
+        app.logger.error('PayApp rejected payment request: %s', result.get('errno', 'unknown'))
+        raise RuntimeError('결제 요청에 실패했습니다. 관리자에게 문의해 주세요.')
+    return result
+
+
+def safe_equal(a, b):
+    return hmac.compare_digest(str(a).encode(), str(b).encode())
+
+
+def authorized_order(data):
+    order_id, token = data.get('orderId'), data.get('token')
+    if not isinstance(order_id, str) or not isinstance(token, str):
+        return None
+    with db() as con:
+        order = con.execute('SELECT * FROM orders WHERE id=?', (order_id,)).fetchone()
+    if not order or not order['access_token'] or not safe_equal(token, order['access_token']):
+        return None
+    return order
+
+
 def generate_premium(payload):
     prompt = ('한국어로 구미호 연애운 프리미엄 자기성찰 리포트를 작성하세요. 900~1300자, 제목과 5개 소제목. '
               '관계에서 점검할 질문과 실천 조언을 구체적으로 쓰되, 미래를 단정하거나 상대의 감정을 읽는 척하지 마세요. '
@@ -142,7 +187,7 @@ def health():
 
 @app.get('/api/config')
 def config():
-    return jsonify(payment_enabled=PAYMENT_ENABLED, price=PRICE, client_key=TOSS_CLIENT_KEY if PAYMENT_ENABLED else '')
+    return jsonify(payment_enabled=PAYMENT_ENABLED, price=PRICE, provider='payapp')
 
 
 @app.post('/api/preview')
@@ -157,54 +202,80 @@ def preview():
 def create_order():
     if not PAYMENT_ENABLED:
         return error('결제 기능이 아직 설정되지 않았습니다.', 503)
+    data = request.get_json(silent=True) or {}
     try:
-        payload = parse_payload(request.get_json(silent=True))
+        payload = parse_payload(data)
     except ValueError as exc:
         return error(str(exc))
+    phone = re.sub(r'[^0-9]', '', str(data.get('phone', '')))
+    if not re.fullmatch(r'01[0-9]{8,9}', phone):
+        return error('결제에 사용할 휴대전화 번호를 입력해 주세요.')
     order_id = 'gumiho_' + secrets.token_urlsafe(20).replace('-', 'A').replace('_', 'B')
+    token = secrets.token_urlsafe(32)
     with db() as con:
-        con.execute('INSERT INTO orders (id,amount,payload,status,created_at) VALUES (?,?,?,?,?)', (order_id, PRICE, json.dumps(payload), 'created', datetime.now(timezone.utc).isoformat()))
-    return jsonify(orderId=order_id, amount=PRICE, orderName='구미호 AI 프리미엄 연애운')
+        con.execute('INSERT INTO orders (id,amount,payload,status,created_at,access_token) VALUES (?,?,?,?,?,?)',
+                    (order_id, PRICE, json.dumps(payload), 'created', datetime.now(timezone.utc).isoformat(), token))
+    fields = {
+        'cmd': 'payrequest', 'userid': PAYAPP_USERID,
+        'goodname': '구미호 AI 프리미엄 연애운', 'price': str(PRICE),
+        'recvphone': phone, 'smsuse': 'n', 'reqaddr': '0',
+        'feedbackurl': PAYAPP_PUBLIC_URL + '/api/payapp/feedback',
+        'returnurl': SITE_URL + '/?payment=return',
+        'var1': order_id, 'checkretry': 'y'
+    }
+    try:
+        result = payapp_request(fields)
+    except RuntimeError as exc:
+        with db() as con:
+            con.execute("UPDATE orders SET status='error' WHERE id=? AND status='created'", (order_id,))
+        return error(str(exc), 502)
+    with db() as con:
+        con.execute('UPDATE orders SET mul_no=? WHERE id=?', (str(result['mul_no']), order_id))
+    return jsonify(orderId=order_id, token=token, payurl=result['payurl'], amount=PRICE)
 
 
-@app.post('/api/payments/confirm')
-def confirm():
+@app.post('/api/payapp/feedback')
+def payapp_feedback():
+    data = request.form
     if not PAYMENT_ENABLED:
-        return error('결제 기능이 비활성화되어 있습니다.', 503)
-    data = request.get_json(silent=True) or {}
-    order_id, payment_key, amount = data.get('orderId'), data.get('paymentKey'), data.get('amount')
-    if not isinstance(order_id, str) or not isinstance(payment_key, str) or not isinstance(amount, int) or isinstance(amount, bool):
-        return error('결제 승인 정보가 올바르지 않습니다.')
+        return 'FAIL', 503
+    if not (safe_equal(data.get('userid', ''), PAYAPP_USERID)
+            and safe_equal(data.get('linkkey', ''), PAYAPP_LINKKEY)
+            and safe_equal(data.get('linkval', ''), PAYAPP_LINKVAL)):
+        return 'FAIL', 403
+    order_id = data.get('var1', '')
     with db() as con:
         order = con.execute('SELECT * FROM orders WHERE id=?', (order_id,)).fetchone()
-    if not order or order['amount'] != amount:
-        return error('주문 금액 또는 주문번호가 일치하지 않습니다.')
-    if order['status'] == 'paid':
-        return jsonify(ok=True) if order['payment_key'] == payment_key else error('이미 승인된 주문입니다.', 409)
-    if order['status'] != 'created':
-        return error('처리할 수 없는 주문 상태입니다.', 409)
-    auth = base64.b64encode((TOSS_SECRET_KEY + ':').encode()).decode()
-    try:
-        result = external_json('https://api.tosspayments.com/v1/payments/confirm', {'paymentKey': payment_key, 'orderId': order_id, 'amount': amount}, {'Authorization': 'Basic ' + auth})
-    except RuntimeError as exc:
-        return error(str(exc), 502)
-    if result.get('status') != 'DONE' or result.get('orderId') != order_id or result.get('totalAmount') != amount or result.get('paymentKey') != payment_key:
-        return error('결제 승인 결과를 검증하지 못했습니다. 고객센터에 문의해 주세요.', 502)
-    with db() as con:
-        con.execute("UPDATE orders SET status='paid',payment_key=? WHERE id=? AND status='created'", (payment_key, order_id))
-    return jsonify(ok=True)
+        if not order or str(order['mul_no']) != str(data.get('mul_no', '')) or str(order['amount']) != str(data.get('price', '')):
+            return 'FAIL', 400
+        state = data.get('pay_state')
+        if state == '4':
+            if order['status'] in ('created', 'paid'):
+                con.execute("UPDATE orders SET status='paid' WHERE id=? AND status='created'", (order_id,))
+        elif state in ('8', '32', '9', '64', '70', '71'):
+            con.execute("UPDATE orders SET status='cancelled' WHERE id=?", (order_id,))
+        elif state in ('1', '10'):
+            pass
+        else:
+            return 'FAIL', 400
+    return 'SUCCESS', 200
+
+
+@app.post('/api/orders/status')
+def order_status():
+    order = authorized_order(request.get_json(silent=True) or {})
+    if not order:
+        return error('주문 인증에 실패했습니다.', 403)
+    return jsonify(status=order['status'])
 
 
 @app.post('/api/premium')
 def premium():
     data = request.get_json(silent=True) or {}
-    order_id = data.get('orderId')
-    if not isinstance(order_id, str):
-        return error('주문번호를 입력해 주세요.')
-    with db() as con:
-        order = con.execute('SELECT * FROM orders WHERE id=?', (order_id,)).fetchone()
+    order = authorized_order(data)
     if not order or order['status'] != 'paid':
         return error('결제 완료된 주문만 분석할 수 있습니다.', 403)
+    order_id = order['id']
     if order['result']:
         return jsonify(result=order['result'])
     if not OPENAI_API_KEY:

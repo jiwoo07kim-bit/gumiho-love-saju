@@ -1,1 +1,43 @@
-
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>구미호 연애운 사주</title><style>
+@import url('https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&display=swap');
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#150e2a;color:#f8eaff;font-family:'Gowun Batang',serif}.wrap{max-width:520px;margin:auto;padding:0 0 55px;background:linear-gradient(#20122f,#3b2354 45%,#1a112b);box-shadow:0 0 65px #080513}.hero{position:relative;width:100%;aspect-ratio:709/1536;background:url('hero-reference.jpg') center top/100% 100% no-repeat}.hero-jump{position:absolute;left:17%;top:50.8%;width:67%;height:8%;border:0;background:transparent;cursor:pointer}.hero-jump:focus-visible{outline:3px solid #fff3b0;border-radius:28px}.content{padding:0 19px}.panel{background:linear-gradient(145deg,#4b3268e8,#241732f5);border:1px solid #cba5e0;border-radius:19px;padding:24px 19px;margin-top:23px;box-shadow:0 8px 35px #0804118c,inset 0 0 24px #b27fd224}.panel h2{font-size:22px;text-align:center;color:#ffe1ff;margin:0 0 20px;text-shadow:0 0 14px #eaaaff}.choice{display:block;width:100%;background:#392349;border:1px solid #c79fcf;border-radius:13px;padding:15px 10px;color:#ffe9ff;font:700 17px 'Gowun Batang',serif;margin:11px 0;cursor:pointer}.choice.active{background:#694b85;border-color:#f7d9ff;box-shadow:0 0 16px #ca8fff66}.field{display:block;margin:18px 0 8px;color:#f7dff5}input,select{width:100%;padding:14px;border:1px solid #caa3d8;border-radius:10px;font-size:16px;background:#f8efff;color:#38234c}button.primary{width:100%;padding:17px;background:linear-gradient(110deg,#8464a7,#65427e,#a37ab6);border:1px solid #e2b8e7;color:#fff2ff;border-radius:17px;font:700 18px 'Gowun Batang',serif;margin-top:22px;cursor:pointer;box-shadow:0 0 20px #b88fce66}button:disabled{opacity:.55}.result{white-space:pre-wrap;line-height:1.95}.small{font-size:12px;line-height:1.8;color:#d5bddb}.hidden{display:none}.error{color:#ffb2c8}.moon{height:200px;background:url('fox-detail.jpg') center 35%/cover;border-radius:15px;margin:18px 0}.footer{text-align:center;font-size:11px;margin:36px 14px;color:#c8adce}.section-art{width:100%;height:180px;object-fit:cover;object-position:center 42%;border-radius:15px;margin:0 0 20px}.navline{text-align:center;padding:15px 10px;color:#ebc9f5;letter-spacing:2px;font-size:12px}button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #fff1a8;outline-offset:2px}@media(min-width:521px){.wrap{margin:24px auto;border-radius:12px;overflow:hidden}}
+</style></head><body><main class="wrap"><header class="hero" aria-label="달빛 아래 흰 구미호와 벚꽃, 구미호 연애운 사주 메인 화면"><button class="hero-jump" type="button" aria-label="지금 바로 사주 보기" onclick="document.getElementById('fortuneForm').scrollIntoView({behavior:'smooth'})"></button></header><div class="content"><div class="navline">✧ 달빛 아래 펼쳐지는 인연의 이야기 ✧</div><section class="panel" id="fortuneForm"><img class="section-art" src="moon-fox.jpg" alt="달빛 아래 아홉 꼬리의 흰 구미호"><h2>✿ 어떤 인연이 궁금한가요? ✿</h2><button class="choice active" data-topic="love">💕 나의 연애운</button><button class="choice" data-topic="reunion">🌙 그 사람과의 재회운</button><button class="choice" data-topic="compatibility">💍 두 사람의 궁합</button><label class="field" for="birth">나의 생년월일 (양력)</label><input id="birth" type="date" required><label class="field" for="hour">태어난 시간</label><select id="hour"><option value="">모름</option></select><div id="other" class="hidden"><label class="field" for="otherBirth">상대방 생년월일 (양력)</label><input id="otherBirth" type="date"></div><button class="primary" id="previewBtn">무료 연애운 미리보기 ✨</button><p class="small">무료 분석은 간이 상징 해석입니다. 유료 주문 시 입력한 생년월일은 주문 처리용 서버에 저장됩니다. 민감한 정보는 입력하지 마세요.</p></section><section id="resultPanel" class="panel hidden"><h2>☾ 구미호의 속삭임 ☾</h2><div id="previewResult" class="result" aria-live="polite"></div><div id="premiumArea"><div class="moon"></div><h2>🔮 더 깊은 인연의 이야기</h2><p>AI 프리미엄 해석은 결제 완료 후 열립니다.</p><p id="price"></p><label class="field" for="payPhone">결제에 사용할 휴대전화 번호</label><input id="payPhone" type="tel" inputmode="tel" autocomplete="tel" placeholder="01012345678" maxlength="13"><button class="primary" id="payBtn" disabled>프리미엄 준비 중</button><p class="small">결제 전 상품 내용·환불 규정·사업자 정보 안내가 필요합니다. 운영 전 해당 내용을 확정해 게시하세요.</p></div><div id="premiumResult" class="result" aria-live="polite"></div></section></div><p class="footer">구미호 연애운 사주 · 전통 명리학 기반 오락 및 자기성찰 콘텐츠</p></main><script>
+const API=location.hostname.endsWith('github.io')?'https://gumiho-love-saju.onrender.com':''; // 별도 도메인은 동일 서버 배포 또는 실제 API 주소 설정 필요
+let topic='love',lastOrder=null,config={};const $=id=>document.getElementById(id);
+for(let i=0;i<24;i++){let o=document.createElement('option');o.value=i;o.textContent=String(i).padStart(2,'0')+':00 ~ '+String(i).padStart(2,'0')+':59';$('hour').appendChild(o)}
+document.querySelectorAll('.choice').forEach(b=>b.onclick=()=>{document.querySelectorAll('.choice').forEach(x=>x.classList.remove('active'));b.classList.add('active');topic=b.dataset.topic;$('other').classList.toggle('hidden',topic!=='compatibility')});
+async function post(path,data){let r=await fetch(API+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});let j=await r.json().catch(()=>({error:'서버 응답을 확인할 수 없습니다.'}));if(!r.ok)throw Error(j.error||'요청 실패');return j}
+const payload=()=>({topic,birth:$('birth').value,hour:$('hour').value,other_birth:$('otherBirth').value});
+$('previewBtn').onclick=async()=>{let b=$('previewBtn');b.disabled=true;b.textContent='사주를 살펴보는 중...';$('resultPanel').classList.remove('hidden');$('previewResult').textContent='';try{let r=await post('/api/preview',payload());$('previewResult').classList.remove('error');let s=r.saju;let p=s.pillars;$('previewResult').textContent=`${r.title}\n\n연주 ${p.year} · 월주 ${p.month} · 일주 ${p.day}${p.hour?' · 시주 '+p.hour:''}\n일간: ${s.day_master}\n오행: ${Object.entries(s.elements).map(([k,v])=>k+' '+v).join(' / ')}\n\n${r.preview}\n\n${r.notice}`;$('resultPanel').scrollIntoView({behavior:'smooth'});}catch(e){$('previewResult').textContent=e.message;$('previewResult').classList.add('error')}finally{b.disabled=false;b.textContent='무료 연애운 미리보기 ✨'}};
+async function init(){try{let r=await fetch(API+'/api/config');config=await r.json();$('price').textContent=config.payment_enabled?'프리미엄 분석 '+config.price.toLocaleString()+'원':'결제 기능 설정 전';$('payBtn').disabled=!config.payment_enabled;$('payBtn').textContent=config.payment_enabled?'프리미엄 결제하기':'프리미엄 준비 중'}catch(e){$('price').textContent='서버 연결 확인이 필요합니다.'}}init();
+$('payBtn').onclick=async()=>{
+ const btn=$('payBtn');btn.disabled=true;
+ try{
+  const order=await post('/api/orders',{...payload(),phone:$('payPhone').value});
+  sessionStorage.setItem('gumiho_order',JSON.stringify({orderId:order.orderId,token:order.token}));
+  location.assign(order.payurl);
+ }catch(e){alert(e.message);btn.disabled=false}
+};
+(async()=>{
+ const q=new URLSearchParams(location.search);
+ if(q.get('payment')!=='return')return;
+ $('resultPanel').classList.remove('hidden');
+ $('previewResult').textContent='결제 완료 확인 중...';
+ const saved=sessionStorage.getItem('gumiho_order');
+ if(!saved){$('previewResult').textContent='이 기기에서 주문 정보를 찾을 수 없습니다. 고객센터에 문의해 주세요.';return}
+ let order;
+ try{order=JSON.parse(saved)}catch(e){$('previewResult').textContent='주문 정보가 올바르지 않습니다.';return}
+ try{
+  const status=await post('/api/orders/status',order);
+  if(status.status!=='paid'){
+    $('previewResult').textContent='아직 결제 완료가 확인되지 않았습니다. 결제했다면 잠시 후 이 페이지를 새로고침해 주세요. 결제 상태: '+status.status;
+    return;
+  }
+  $('previewResult').textContent='결제가 확인되었습니다. AI 분석을 생성합니다.';
+  const r=await post('/api/premium',order);
+  $('premiumResult').textContent=r.result;
+  $('premiumArea').classList.add('hidden');
+  $('previewResult').textContent='프리미엄 분석 결과';
+ }catch(e){$('previewResult').textContent='결제 확인/분석 오류: '+e.message}
+})();
+</script></body></html>
