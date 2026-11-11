@@ -1,4 +1,6 @@
-import base64
+import hashlib
+import hmac
+import urllib.parse
 import json
 import os
 import re
@@ -20,7 +22,12 @@ TOSS_SECRET_KEY = os.environ.get('TOSS_SECRET_KEY', '')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
 OPENAI_MODEL = os.environ.get('OPENAI_MODEL', 'gpt-4.1-mini')
 ALLOWED_ORIGINS = {x.strip().rstrip('/') for x in os.environ.get('ALLOWED_ORIGINS', '').split(',') if x.strip()}
-PAYMENT_ENABLED = bool(TOSS_CLIENT_KEY and TOSS_SECRET_KEY and OPENAI_API_KEY)
+PAYAPP_USERID = os.environ.get('PAYAPP_USERID', '')
+PAYAPP_LINK_KEY = os.environ.get('PAYAPP_LINK_KEY', '')
+PAYAPP_LINK_VALUE = os.environ.get('PAYAPP_LINK_VALUE', '')
+PAYAPP_PAYMENT_KEY = os.environ.get('PAYAPP_PAYMENT_KEY', '')
+SITE_URL = os.environ.get('SITE_URL', 'https://gumiho-love-saju.onrender.com').rstrip('/')
+PAYMENT_ENABLED = bool(PAYAPP_USERID and PAYAPP_LINK_KEY and PAYAPP_LINK_VALUE and PAYAPP_PAYMENT_KEY and OPENAI_API_KEY and os.environ.get('DB_PATH'))
 TOPICS = {'love': '나의 연애운', 'reunion': '그 사람과의 재회운', 'compatibility': '두 사람의 궁합'}
 ANIMALS = ['원숭이', '닭', '개', '돼지', '쥐', '소', '호랑이', '토끼', '용', '뱀', '말', '양']
 STEMS = ['갑', '을', '병', '정', '무', '기', '경', '신', '임', '계']
@@ -149,7 +156,7 @@ def health():
 
 @app.get('/api/config')
 def config():
-    return jsonify(payment_enabled=PAYMENT_ENABLED, price=PRICE, client_key=TOSS_CLIENT_KEY if PAYMENT_ENABLED else '')
+    return jsonify(payment_enabled=PAYMENT_ENABLED, price=PRICE, provider='payapp')
 
 
 @app.post('/api/preview')
@@ -163,43 +170,78 @@ def preview():
 @app.post('/api/orders')
 def create_order():
     if not PAYMENT_ENABLED:
-        return error('결제 기능이 아직 설정되지 않았습니다.', 503)
+        return error('결제 설정이 아직 완료되지 않았습니다. PAYAPP_USERID, 인증키, OPENAI_API_KEY, 영구 DB_PATH를 확인해 주세요.', 503)
     try:
         payload = parse_payload(request.get_json(silent=True))
     except ValueError as exc:
         return error(str(exc))
-    order_id = 'gumiho_' + secrets.token_urlsafe(20).replace('-', 'A').replace('_', 'B')
+    order_id = 'gumiho_' + secrets.token_urlsafe(20)
     with db() as con:
-        con.execute('INSERT INTO orders (id,amount,payload,status,created_at) VALUES (?,?,?,?,?)', (order_id, PRICE, json.dumps(payload), 'created', datetime.now(timezone.utc).isoformat()))
-    return jsonify(orderId=order_id, amount=PRICE, orderName='구미호 AI 프리미엄 연애운')
+        con.execute('INSERT INTO orders (id,amount,payload,status,created_at) VALUES (?,?,?,?,?)',
+                    (order_id, PRICE, json.dumps(payload), 'created', datetime.now(timezone.utc).isoformat()))
+    values = {'cmd': 'payrequest', 'userid': PAYAPP_USERID, 'linkkey': PAYAPP_LINK_KEY,
+              'goodname': '구미호 AI 프리미엄 연애운', 'price': str(PRICE),
+              'recvphone': '01000000000', 'smsuse': 'n', 'reqaddr': '0',
+              'feedbackurl': SITE_URL + '/api/payapp/feedback',
+              'returnurl': SITE_URL + '/?payment=return&orderId=' + urllib.parse.quote(order_id),
+              'var1': order_id, 'checkretry': 'y'}
+    req = urllib.request.Request('https://api.payapp.kr/oapi/v2',
+        data=urllib.parse.urlencode(values).encode('utf-8'),
+        headers={'Content-Type': 'application/x-www-form-urlencoded'}, method='POST')
+    try:
+        with urllib.request.urlopen(req, timeout=25) as response:
+            result = dict(urllib.parse.parse_qsl(response.read().decode('utf-8')))
+    except Exception:
+        app.logger.exception('PayApp payment request failed')
+        return error('페이앱 결제 요청에 실패했습니다.', 502)
+    url = result.get('payurl', '')
+    if result.get('state') != '1' or not url.startswith(('https://payapp.kr/', 'http://payapp.kr/', 'https://www.payapp.kr/')):
+        return error('페이앱 결제창을 열지 못했습니다: ' + str(result.get('errorMessage', '설정 확인 필요'))[:120], 502)
+    with db() as con:
+        con.execute("UPDATE orders SET payment_key=? WHERE id=?", (str(result.get('mul_no', '')), order_id))
+    return jsonify(orderId=order_id, amount=PRICE, payurl=url)
 
 
-@app.post('/api/payments/confirm')
-def confirm():
-    if not PAYMENT_ENABLED:
-        return error('결제 기능이 비활성화되어 있습니다.', 503)
-    data = request.get_json(silent=True) or {}
-    order_id, payment_key, amount = data.get('orderId'), data.get('paymentKey'), data.get('amount')
-    if not isinstance(order_id, str) or not isinstance(payment_key, str) or not isinstance(amount, int) or isinstance(amount, bool):
-        return error('결제 승인 정보가 올바르지 않습니다.')
+@app.post('/api/payapp/feedback')
+def payapp_feedback():
+    form = request.form
+    user = form.get('userid', '')
+    timestamp = form.get('responsedate', '')
+    expected = hashlib.sha256((PAYAPP_USERID + timestamp + PAYAPP_PAYMENT_KEY).encode()).hexdigest()
+    try:
+        stamp = datetime.strptime(timestamp, '%Y%m%d%H%M%S').replace(tzinfo=timezone.utc)
+        # PayApp timestamp may be KST; compare against both UTC and KST.
+        age = min(abs((datetime.now(timezone.utc) - stamp).total_seconds()),
+                  abs((datetime.now(timezone.utc) - stamp.replace(tzinfo=timezone.utc) + __import__('datetime').timedelta(hours=9)).total_seconds()))
+        amount = int(form.get('price', '0'))
+    except (ValueError, TypeError):
+        return 'FAIL', 400
+    if (not PAYMENT_ENABLED or age > 900 or user != PAYAPP_USERID
+        or not hmac.compare_digest(form.get('linkkey', ''), PAYAPP_LINK_KEY)
+        or not hmac.compare_digest(form.get('linkval', ''), PAYAPP_LINK_VALUE)
+        or not hmac.compare_digest(form.get('hash', '').lower(), expected)):
+        return 'FAIL', 403
+    order_id = form.get('var1', '')
+    mul_no = form.get('mul_no', '')
     with db() as con:
         order = con.execute('SELECT * FROM orders WHERE id=?', (order_id,)).fetchone()
-    if not order or order['amount'] != amount:
-        return error('주문 금액 또는 주문번호가 일치하지 않습니다.')
-    if order['status'] == 'paid':
-        return jsonify(ok=True) if order['payment_key'] == payment_key else error('이미 승인된 주문입니다.', 409)
-    if order['status'] != 'created':
-        return error('처리할 수 없는 주문 상태입니다.', 409)
-    auth = base64.b64encode((TOSS_SECRET_KEY + ':').encode()).decode()
-    try:
-        result = external_json('https://api.tosspayments.com/v1/payments/confirm', {'paymentKey': payment_key, 'orderId': order_id, 'amount': amount}, {'Authorization': 'Basic ' + auth})
-    except RuntimeError as exc:
-        return error(str(exc), 502)
-    if result.get('status') != 'DONE' or result.get('orderId') != order_id or result.get('totalAmount') != amount or result.get('paymentKey') != payment_key:
-        return error('결제 승인 결과를 검증하지 못했습니다. 고객센터에 문의해 주세요.', 502)
+        if not order or amount != order['amount'] or not mul_no or order['payment_key'] != mul_no:
+            return 'FAIL', 400
+        state = form.get('pay_state', '')
+        if state == '4' and order['status'] == 'created':
+            con.execute("UPDATE orders SET status='paid' WHERE id=? AND status='created'", (order_id,))
+        elif state in {'8','16','31','32','9','64','70','71'}:
+            con.execute("UPDATE orders SET status='cancelled' WHERE id=?", (order_id,))
+    return 'SUCCESS', 200
+
+
+@app.get('/api/orders/<order_id>/status')
+def order_status(order_id):
     with db() as con:
-        con.execute("UPDATE orders SET status='paid',payment_key=? WHERE id=? AND status='created'", (payment_key, order_id))
-    return jsonify(ok=True)
+        order = con.execute('SELECT status FROM orders WHERE id=?', (order_id,)).fetchone()
+    if not order:
+        return error('주문을 찾을 수 없습니다.', 404)
+    return jsonify(status=order['status'])
 
 
 @app.post('/api/premium')
