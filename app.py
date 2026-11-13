@@ -19,7 +19,7 @@ app = Flask(__name__, static_folder='static', static_url_path='')
 app.json.ensure_ascii = False
 DB_PATH = os.environ.get('DB_PATH', str(ROOT / 'orders.sqlite3'))
 DATABASE_URL = os.environ.get('DATABASE_URL', '')
-PRICE = int(os.environ.get('PREMIUM_PRICE', '4900'))
+PRICE = int(os.environ.get('PREMIUM_PRICE', '4990'))
 TOSS_CLIENT_KEY = os.environ.get('TOSS_CLIENT_KEY', '')
 TOSS_SECRET_KEY = os.environ.get('TOSS_SECRET_KEY', '')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
